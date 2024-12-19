@@ -6,6 +6,8 @@ An MCP server that provides access to Jina AI's powerful web services through Cl
 - Web search
 - Fact checking/grounding
 
+<a href="https://glama.ai/mcp/servers/c1l6ib2j49"><img width="380" height="200" src="https://glama.ai/mcp/servers/c1l6ib2j49/badge" alt="mcp-jina-ai MCP server" /></a>
+
 ## Features
 
 ### Tools
