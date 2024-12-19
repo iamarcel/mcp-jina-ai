@@ -121,7 +121,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: zodToJsonSchema(SearchWebSchema)
       },
       {
-        name: "ground_statement",
+        name: "fact_check",
         description: "Fact-check a statement using Jina AI's grounding engine",
         inputSchema: zodToJsonSchema(GroundingSchema)
       }
@@ -148,7 +148,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
 
-      case "ground_statement": {
+      case "fact_check": {
         const args = GroundingSchema.parse(request.params.arguments);
         const result = await groundStatement(args);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };

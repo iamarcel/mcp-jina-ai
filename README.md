@@ -24,9 +24,9 @@ An MCP server that provides access to Jina AI's powerful web services through Cl
 - Multiple return formats (markdown, text, html)
 - Returns structured results with titles, descriptions, and content
 
-#### `ground_statement`
+#### `fact_check`
 - Fact-check statements using Jina AI's grounding engine
-- Provides factuality scores and supporting evidence
+- Provides factuality scores and supporting evidence 
 - Optional deep-dive mode for more thorough analysis
 - Returns references with key quotes and supportive/contradictory classification
 
