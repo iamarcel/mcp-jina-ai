@@ -1,4 +1,5 @@
 # Jina AI MCP Server
+[![smithery badge](https://smithery.ai/badge/jina-ai-mcp-server)](https://smithery.ai/server/jina-ai-mcp-server)
 
 An MCP server that provides access to Jina AI's powerful web services through Claude. This server implements three main tools:
 
@@ -41,6 +42,14 @@ You'll need a Jina AI API key to use this server. Get one for free at https://ji
 ### Installation
 
 There are two ways to use this server:
+
+#### Installing via Smithery
+
+To install Jina AI for Claude Desktop automatically via [Smithery](https://smithery.ai/server/jina-ai-mcp-server):
+
+```bash
+npx -y @smithery/cli install jina-ai-mcp-server --client claude
+```
 
 #### Option 1: NPX (Recommended)
 Add this configuration to your Claude Desktop config file:
