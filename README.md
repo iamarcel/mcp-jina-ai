@@ -1,4 +1,5 @@
 # Jina AI MCP Server
+[![smithery badge](https://smithery.ai/badge/jina-ai-mcp-server)](https://smithery.ai/server/jina-ai-mcp)
 [![smithery badge](https://smithery.ai/badge/jina-ai-mcp-server)](https://smithery.ai/server/jina-ai-mcp-server)
 
 An MCP server that provides access to Jina AI's powerful web services through Claude. This server implements three main tools:
