@@ -34,7 +34,7 @@ const FactCheckInputSchema = {
 
 // Schema for the Read Webpage tool input
 const ReadWebpageInputSchema = {
-  url: z.string().url().describe("The URL of the webpage to read."),
+  url: z.string().describe("The URL of the webpage to read."), // `.url()` is not supported by Gemini
   // Optional: returnFormat: z.enum(["markdown", "html", "text", "screenshot", "pageshot"]).optional().default("text").describe("Desired format of the returned content.")
 };
 
