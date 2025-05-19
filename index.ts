@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { z } from "zod";
 import fetch from "node-fetch"; // Use node-fetch for CJS compatibility or ensure Node >= 18 for global fetch
+import { SearchResponseSchema } from "./schemas.js";
 
 // --- Zod Schemas ---
 
@@ -24,6 +25,8 @@ const SearchInputSchema = {
   // Optional: site: z.string().url().optional().describe("Limit search to this specific website URL.")
 };
 
+type SearchResultItem = z.infer<typeof SearchResponseSchema>["data"][number];
+
 // Schema for the Fact Check tool input
 const FactCheckInputSchema = {
   statement: z
@@ -35,7 +38,12 @@ const FactCheckInputSchema = {
 // Schema for the Read Webpage tool input
 const ReadWebpageInputSchema = {
   url: z.string().describe("The URL of the webpage to read."), // `.url()` is not supported by Gemini
-  // Optional: returnFormat: z.enum(["markdown", "html", "text", "screenshot", "pageshot"]).optional().default("text").describe("Desired format of the returned content.")
+  // Optional: returnFormat: z.enum(["markdown", "html", "text", "screenshot", "pageshot"]).optional().default("text").describe("Desired format of the returned content."),
+  query: z
+    .string()
+    .describe(
+      "Query used to filter and return the most relevant parts of the page."
+    ),
 };
 
 // --- Jina API Configuration ---
@@ -45,6 +53,7 @@ const JINA_API_KEY = process.env.JINA_API_KEY;
 const JINA_SEARCH_URL = "https://s.jina.ai/";
 const JINA_GROUNDING_URL = "https://g.jina.ai/";
 const JINA_READER_URL = "https://r.jina.ai/";
+const JINA_EMBEDDING_URL = "https://r.jina.ai/v1/embeddings";
 
 if (!JINA_API_KEY) {
   console.error("Error: JINA_API_KEY environment variable is not set.");
@@ -59,6 +68,57 @@ const JINA_HEADERS = {
   Accept: "application/json",
   "Content-Type": "application/json",
 };
+
+// --- Embedding and Similarity Helpers ---
+
+/**
+ * Split text into word-based chunks suitable for embedding generation.
+ */
+function chunkText(text: string, chunkSize = 200): string[] {
+  const words = text.split(/\s+/);
+  const chunks: string[] = [];
+  for (let i = 0; i < words.length; i += chunkSize) {
+    chunks.push(words.slice(i, i + chunkSize).join(" "));
+  }
+  return chunks;
+}
+
+// Generate embeddings using Jina AI
+async function embedTexts(texts: string[]): Promise<number[][]> {
+  const filtered = texts.filter((t) => t.trim() !== "");
+  if (filtered.length === 0) {
+    return [];
+  }
+  const response = await callJinaApi(JINA_EMBEDDING_URL, {
+    model: "jina-embeddings-v3",
+    task: "text-matching",
+    late_chunking: true,
+    input: filtered,
+  });
+  if (response && response.data && Array.isArray(response.data.embeddings)) {
+    return response.data.embeddings;
+  }
+  if (response && Array.isArray(response.embeddings)) {
+    return response.embeddings;
+  }
+  const detail = JSON.stringify(response);
+  throw new Error(
+    `Unexpected response from Jina embedding service: ${detail}`
+  );
+}
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  let dot = 0,
+    normA = 0,
+    normB = 0;
+  for (let i = 0; i < a.length && i < b.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
 
 // --- Helper Function for Jina API Calls ---
 
@@ -160,15 +220,24 @@ server.tool(
         };
       }
 
-      // Concatenate content from all results
-      const combinedContent = response.data
-        .map(
-          (item: any, index: number) =>
-            `Result ${index + 1}:\nTitle: ${item.title}\nURL: ${
-              item.url
-            }\nContent: ${item.content}\n---`
-        )
-        .join("\n\n");
+
+      // Embed the query once
+      const queryEmbedding = (await embedTexts([query]))[0];
+
+      // Process each result by selecting the most relevant chunk
+      const processed = await Promise.all(
+        response.data.map(async (item: SearchResultItem, index: number) => {
+          const chunks = chunkText(item.content || "");
+          const chunkEmbeddings = await embedTexts(chunks);
+          const scored = chunks
+            .map((c, i) => ({ c, score: cosineSimilarity(queryEmbedding, chunkEmbeddings[i]) }))
+            .sort((a, b) => b.score - a.score);
+          const topChunks = scored.slice(0, 5).map((s) => s.c).join("\n");
+          return `Result ${index + 1}:\nTitle: ${item.title}\nURL: ${item.url}\nRelevant Content:\n${topChunks}\n---`;
+        })
+      );
+
+      const combinedContent = processed.join("\n\n");
 
       // Validate output before returning
       return McpContentSchema.parse({
@@ -254,7 +323,7 @@ server.tool(
   "read-webpage",
   "Read a webpage and extract its content.",
   ReadWebpageInputSchema,
-  async ({ url }): Promise<z.infer<typeof McpContentSchema>> => {
+  async ({ url, query }): Promise<z.infer<typeof McpContentSchema>> => {
     console.log(`Executing read-webpage tool for URL: ${url}`);
     try {
       // Add X-Return-Format header if needed, default is markdown-like text
@@ -282,8 +351,17 @@ server.tool(
       }
 
       const { title, content } = response.data;
-      const outputText = `Title: ${title || "N/A"}\nURL: ${url}\n\nContent:\n${
-        content || "No content extracted."
+      const chunks = chunkText(content || "");
+      const chunkEmbeddings = await embedTexts(chunks);
+      const queryText = query || title || "";
+      const queryEmbedding = (await embedTexts([queryText]))[0];
+      const scored = chunks
+        .map((c, i) => ({ c, score: cosineSimilarity(queryEmbedding, chunkEmbeddings[i]) }))
+        .sort((a, b) => b.score - a.score);
+      const topChunks = scored.slice(0, 5).map((s) => s.c).join("\n\n");
+
+      const outputText = `Title: ${title || "N/A"}\nURL: ${url}\n\nRelevant Content:\n${
+        topChunks || "No content extracted."
       }`;
 
       // Validate output before returning
