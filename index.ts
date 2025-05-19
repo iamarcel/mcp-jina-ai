@@ -3,6 +3,16 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { z } from "zod";
 import fetch from "node-fetch"; // Use node-fetch for CJS compatibility or ensure Node >= 18 for global fetch
+import {
+  SearchResponseSchema,
+  ReaderResponseSchema,
+  GroundingResponseSchema,
+  EmbeddingResponseSchema,
+  SearchResponse,
+  ReaderResponse,
+  GroundingResponse,
+  EmbeddingResponse,
+} from "./schemas.js";
 
 // --- Zod Schemas ---
 
@@ -35,8 +45,13 @@ const FactCheckInputSchema = {
 // Schema for the Read Webpage tool input
 const ReadWebpageInputSchema = {
   url: z.string().describe("The URL of the webpage to read."), // `.url()` is not supported by Gemini
-  // Optional: returnFormat: z.enum(["markdown", "html", "text", "screenshot", "pageshot"]).optional().default("text").describe("Desired format of the returned content.")
-};
+  // Optional: returnFormat: z.enum(["markdown", "html", "text", "screenshot", "pageshot"]).optional().default("text").describe("Desired format of the returned content."),
+  query: z
+    .string()
+    .describe(
+      "Query used to select the most relevant parts of the webpage content."
+    ),
+}; 
 
 // --- Jina API Configuration ---
 
@@ -45,6 +60,7 @@ const JINA_API_KEY = process.env.JINA_API_KEY;
 const JINA_SEARCH_URL = "https://s.jina.ai/";
 const JINA_GROUNDING_URL = "https://g.jina.ai/";
 const JINA_READER_URL = "https://r.jina.ai/";
+const JINA_EMBEDDING_URL = "https://r.jina.ai/v1/embeddings";
 
 if (!JINA_API_KEY) {
   console.error("Error: JINA_API_KEY environment variable is not set.");
@@ -60,13 +76,51 @@ const JINA_HEADERS = {
   "Content-Type": "application/json",
 };
 
+// --- Embedding and Similarity Helpers ---
+
+/** Split text into manageable chunks for embedding generation. */
+function chunkText(text: string, chunkSize = 200): string[] {
+  const words = text.split(/\s+/);
+  const chunks: string[] = [];
+  for (let i = 0; i < words.length; i += chunkSize) {
+    chunks.push(words.slice(i, i + chunkSize).join(" "));
+  }
+  return chunks;
+}
+
+// Generate embeddings using Jina AI with basic validation
+async function embedTexts(texts: string[]): Promise<number[][]> {
+  const trimmed = texts.map((t) => t.trim()).filter((t) => t !== "");
+  if (trimmed.length === 0) {
+    return [];
+  }
+  const response = await embedJina(trimmed);
+  if ("data" in response) {
+    return response.data.map((d) => d.embedding);
+  }
+  return response.embeddings;
+}
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  let dot = 0,
+    normA = 0,
+    normB = 0;
+  for (let i = 0; i < a.length && i < b.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
 // --- Helper Function for Jina API Calls ---
 
-async function callJinaApi(
+async function callJinaApi<T>(
   url: string,
   body: object,
   headers: Record<string, string> = JINA_HEADERS
-): Promise<any> {
+): Promise<T> {
   // Basic retry mechanism (e.g., 1 retry on network failure)
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
@@ -95,7 +149,7 @@ async function callJinaApi(
           `Jina API request succeeded at ${url} but returned an empty response.`
         );
       }
-      return JSON.parse(text); // Parse JSON only if text is not empty
+      return JSON.parse(text) as T; // Parse JSON only if text is not empty
     } catch (error: any) {
       console.error(`Attempt ${attempt} failed for ${url}:`, error.message);
       if (attempt === 2) {
@@ -110,6 +164,34 @@ async function callJinaApi(
   throw new Error(
     `Jina API request failed after multiple attempts for ${url}.`
   );
+}
+
+// Specialized helpers for each Jina endpoint with typed responses
+async function searchJina(query: string): Promise<SearchResponse> {
+  const raw = await callJinaApi<SearchResponse>(JINA_SEARCH_URL, { q: query });
+  return SearchResponseSchema.parse(raw);
+}
+
+async function readJina(url: string): Promise<ReaderResponse> {
+  const raw = await callJinaApi<ReaderResponse>(JINA_READER_URL, { url });
+  return ReaderResponseSchema.parse(raw);
+}
+
+async function groundJina(statement: string): Promise<GroundingResponse> {
+  const raw = await callJinaApi<GroundingResponse>(JINA_GROUNDING_URL, {
+    statement,
+  });
+  return GroundingResponseSchema.parse(raw);
+}
+
+async function embedJina(texts: string[]): Promise<EmbeddingResponse> {
+  const raw = await callJinaApi<EmbeddingResponse>(JINA_EMBEDDING_URL, {
+    input: texts,
+    model: "jina-embeddings-v3",
+    task: "text-matching",
+    late_chunking: true,
+  });
+  return EmbeddingResponseSchema.parse(raw);
 }
 
 // --- MCP Server Setup ---
@@ -136,39 +218,49 @@ server.tool(
   async ({ query }): Promise<z.infer<typeof McpContentSchema>> => {
     console.log(`Executing search tool with query: "${query}"`);
     try {
-      const response = await callJinaApi(JINA_SEARCH_URL, { q: query });
+      const response = await searchJina(query);
 
       // Ensure response.data is an array before proceeding
-      if (!response || !Array.isArray(response.data)) {
-        console.error(
-          "Unexpected response format from Jina Search API:",
-          response
-        );
-        return {
-          content: [
-            {
-              type: "text",
-              text: "Search failed: Unexpected response format from API.",
-            },
-          ],
-        };
-      }
-
       if (response.data.length === 0) {
         return {
           content: [{ type: "text", text: "No search results found." }],
         };
       }
 
-      // Concatenate content from all results
-      const combinedContent = response.data
-        .map(
-          (item: any, index: number) =>
-            `Result ${index + 1}:\nTitle: ${item.title}\nURL: ${
-              item.url
-            }\nContent: ${item.content}\n---`
-        )
-        .join("\n\n");
+
+      // Embed the query once
+      const queryEmbeddingArray = await embedTexts([query.trim()]);
+      const queryEmbedding = queryEmbeddingArray[0];
+
+      // Process each result by selecting the most relevant chunks
+      const processed = await Promise.all(
+        response.data.map(async (item: SearchResponse["data"][number], index: number) => {
+          const allChunks = chunkText(item.content || "");
+          const validChunks = allChunks.filter((c) => c.trim() !== "");
+          if (validChunks.length === 0) {
+            return `Result ${index + 1}:\nTitle: ${item.title}\nURL: ${item.url}\nRelevant Content: \n\n`;
+          }
+          const chunkEmbeddings = await embedTexts(validChunks);
+          if (chunkEmbeddings.length !== validChunks.length) {
+            console.error(
+              `Embedding count mismatch for search result ${item.url}. Expected ${validChunks.length}, got ${chunkEmbeddings.length}.`
+            );
+          }
+          const scored = validChunks
+            .map((c, i) => ({
+              c,
+              score:
+                queryEmbedding && chunkEmbeddings[i]
+                  ? cosineSimilarity(queryEmbedding, chunkEmbeddings[i])
+                  : 0,
+            }))
+            .sort((a, b) => b.score - a.score);
+          const bestChunks = scored.slice(0, 5).map((s) => s.c).join("\n\n");
+          return `Result ${index + 1}:\nTitle: ${item.title}\nURL: ${item.url}\nRelevant Content:\n${bestChunks}\n---`;
+        })
+      );
+
+      const combinedContent = processed.join("\n\n");
 
       // Validate output before returning
       return McpContentSchema.parse({
@@ -192,27 +284,7 @@ server.tool(
   async ({ statement }): Promise<z.infer<typeof McpContentSchema>> => {
     console.log(`Executing fact-check tool with statement: "${statement}"`);
     try {
-      const response = await callJinaApi(JINA_GROUNDING_URL, { statement });
-
-      // Ensure response.data exists and has the expected properties
-      if (
-        !response ||
-        !response.data ||
-        typeof response.data.result === "undefined"
-      ) {
-        console.error(
-          "Unexpected response format from Jina Grounding API:",
-          response
-        );
-        return {
-          content: [
-            {
-              type: "text",
-              text: "Fact check failed: Unexpected response format from API.",
-            },
-          ],
-        };
-      }
+      const response = await groundJina(statement);
 
       const { result, reason, references } = response.data;
       let referencesText = "No specific references provided.";
@@ -254,36 +326,40 @@ server.tool(
   "read-webpage",
   "Read a webpage and extract its content.",
   ReadWebpageInputSchema,
-  async ({ url }): Promise<z.infer<typeof McpContentSchema>> => {
+  async ({ url, query }): Promise<z.infer<typeof McpContentSchema>> => {
     console.log(`Executing read-webpage tool for URL: ${url}`);
     try {
       // Add X-Return-Format header if needed, default is markdown-like text
       // const headers = { ...JINA_HEADERS, 'X-Return-Format': 'text' };
-      const response = await callJinaApi(JINA_READER_URL, { url }); // Pass standard headers
-
-      // Ensure response.data exists and has the content property
-      if (
-        !response ||
-        !response.data ||
-        typeof response.data.content === "undefined"
-      ) {
-        console.error(
-          "Unexpected response format from Jina Reader API:",
-          response
-        );
-        return {
-          content: [
-            {
-              type: "text",
-              text: "Reading webpage failed: Unexpected response format from API.",
-            },
-          ],
-        };
-      }
+      const response = await readJina(url);
 
       const { title, content } = response.data;
-      const outputText = `Title: ${title || "N/A"}\nURL: ${url}\n\nContent:\n${
-        content || "No content extracted."
+      const allChunks = chunkText(content || "");
+      const validChunks = allChunks.filter((c) => c.trim() !== "");
+      let topChunks = "";
+      if (validChunks.length > 0) {
+        const chunkEmbeddings = await embedTexts(validChunks);
+        let queryText = query.trim();
+        if (queryText === "") {
+          queryText = title || "";
+        }
+        const queryEmbeddingArray = await embedTexts([queryText]);
+        const queryEmbedding = queryEmbeddingArray[0];
+        if (queryEmbedding && chunkEmbeddings.length === validChunks.length) {
+          const scored = validChunks
+            .map((c, i) => ({
+              c,
+              score: cosineSimilarity(queryEmbedding, chunkEmbeddings[i]),
+            }))
+            .sort((a, b) => b.score - a.score);
+          topChunks = scored.slice(0, 5).map((s) => s.c).join("\n\n");
+        } else {
+          topChunks = validChunks.slice(0, 5).join("\n\n");
+        }
+      }
+
+      const outputText = `Title: ${title || "N/A"}\nURL: ${url}\n\nRelevant Content:\n${
+        topChunks || "No content extracted."
       }`;
 
       // Validate output before returning

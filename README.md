@@ -20,13 +20,14 @@ An MCP server that provides access to Jina AI's powerful web services through Cl
 - Options for including links and images
 - Ability to generate alt text for images
 - Cache control options
+- Requires a query and returns the five most relevant chunks using Jina embeddings
 
 #### `search_web`
 - Search the web using Jina AI's search API
 - Configurable number of results (default: 5)
 - Support for image retention and alt text generation
 - Multiple return formats (markdown, text, html)
-- Returns structured results with titles, descriptions, and content
+- Returns structured results with titles, descriptions, and the five most relevant content chunks
 
 #### `fact_check`
 - Fact-check statements using Jina AI's grounding engine

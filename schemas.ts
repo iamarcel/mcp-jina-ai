@@ -87,6 +87,32 @@ export const GroundingResponseSchema = z.object({
   })
 });
 
+// Embedding schemas
+export const EmbeddingResponseSchema = z.union([
+  z.object({
+    data: z.array(
+      z.object({
+        embedding: z.array(z.number()),
+        index: z.number().optional(),
+        object: z.string().optional()
+      })
+    ),
+    model: z.string().optional(),
+    object: z.string().optional(),
+    usage: z
+      .object({
+        total_tokens: z.number().optional(),
+        prompt_tokens: z.number().optional()
+      })
+      .optional()
+  }),
+  z.object({
+    embeddings: z.array(z.array(z.number()))
+  })
+]);
+
+export type EmbeddingResponse = z.infer<typeof EmbeddingResponseSchema>;
+
 export type ReaderRequest = z.infer<typeof ReaderRequestSchema>;
 export type ReaderResponse = z.infer<typeof ReaderResponseSchema>;
 export type SearchWebRequest = z.infer<typeof SearchWebSchema>;
