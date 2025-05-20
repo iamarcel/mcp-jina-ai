@@ -51,7 +51,7 @@ const ReadWebpageInputSchema = {
     .describe(
       "Query used to select the most relevant parts of the webpage content."
     ),
-}; 
+};
 
 // --- Jina API Configuration ---
 
@@ -60,7 +60,7 @@ const JINA_API_KEY = process.env.JINA_API_KEY;
 const JINA_SEARCH_URL = "https://s.jina.ai/";
 const JINA_GROUNDING_URL = "https://g.jina.ai/";
 const JINA_READER_URL = "https://r.jina.ai/";
-const JINA_EMBEDDING_URL = "https://r.jina.ai/v1/embeddings";
+const JINA_EMBEDDING_URL = "https://api.jina.ai/v1/embeddings";
 
 if (!JINA_API_KEY) {
   console.error("Error: JINA_API_KEY environment variable is not set.");
@@ -227,37 +227,45 @@ server.tool(
         };
       }
 
-
       // Embed the query once
       const queryEmbeddingArray = await embedTexts([query.trim()]);
       const queryEmbedding = queryEmbeddingArray[0];
 
       // Process each result by selecting the most relevant chunks
       const processed = await Promise.all(
-        response.data.map(async (item: SearchResponse["data"][number], index: number) => {
-          const allChunks = chunkText(item.content || "");
-          const validChunks = allChunks.filter((c) => c.trim() !== "");
-          if (validChunks.length === 0) {
-            return `Result ${index + 1}:\nTitle: ${item.title}\nURL: ${item.url}\nRelevant Content: \n\n`;
+        response.data.map(
+          async (item: SearchResponse["data"][number], index: number) => {
+            const allChunks = chunkText(item.content || "");
+            const validChunks = allChunks.filter((c) => c.trim() !== "");
+            if (validChunks.length === 0) {
+              return `Result ${index + 1}:\nTitle: ${item.title}\nURL: ${
+                item.url
+              }\nRelevant Content: \n\n`;
+            }
+            const chunkEmbeddings = await embedTexts(validChunks);
+            if (chunkEmbeddings.length !== validChunks.length) {
+              console.error(
+                `Embedding count mismatch for search result ${item.url}. Expected ${validChunks.length}, got ${chunkEmbeddings.length}.`
+              );
+            }
+            const scored = validChunks
+              .map((c, i) => ({
+                c,
+                score:
+                  queryEmbedding && chunkEmbeddings[i]
+                    ? cosineSimilarity(queryEmbedding, chunkEmbeddings[i])
+                    : 0,
+              }))
+              .sort((a, b) => b.score - a.score);
+            const bestChunks = scored
+              .slice(0, 5)
+              .map((s) => s.c)
+              .join("\n\n");
+            return `Result ${index + 1}:\nTitle: ${item.title}\nURL: ${
+              item.url
+            }\nRelevant Content:\n${bestChunks}\n---`;
           }
-          const chunkEmbeddings = await embedTexts(validChunks);
-          if (chunkEmbeddings.length !== validChunks.length) {
-            console.error(
-              `Embedding count mismatch for search result ${item.url}. Expected ${validChunks.length}, got ${chunkEmbeddings.length}.`
-            );
-          }
-          const scored = validChunks
-            .map((c, i) => ({
-              c,
-              score:
-                queryEmbedding && chunkEmbeddings[i]
-                  ? cosineSimilarity(queryEmbedding, chunkEmbeddings[i])
-                  : 0,
-            }))
-            .sort((a, b) => b.score - a.score);
-          const bestChunks = scored.slice(0, 5).map((s) => s.c).join("\n\n");
-          return `Result ${index + 1}:\nTitle: ${item.title}\nURL: ${item.url}\nRelevant Content:\n${bestChunks}\n---`;
-        })
+        )
       );
 
       const combinedContent = processed.join("\n\n");
@@ -352,13 +360,18 @@ server.tool(
               score: cosineSimilarity(queryEmbedding, chunkEmbeddings[i]),
             }))
             .sort((a, b) => b.score - a.score);
-          topChunks = scored.slice(0, 5).map((s) => s.c).join("\n\n");
+          topChunks = scored
+            .slice(0, 5)
+            .map((s) => s.c)
+            .join("\n\n");
         } else {
           topChunks = validChunks.slice(0, 5).join("\n\n");
         }
       }
 
-      const outputText = `Title: ${title || "N/A"}\nURL: ${url}\n\nRelevant Content:\n${
+      const outputText = `Title: ${
+        title || "N/A"
+      }\nURL: ${url}\n\nRelevant Content:\n${
         topChunks || "No content extracted."
       }`;
 
