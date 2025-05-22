@@ -88,17 +88,49 @@ function chunkText(text: string, chunkSize = 200): string[] {
   return chunks;
 }
 
-// Generate embeddings using Jina AI with basic validation
+// Token limit for a single embedding request (approximate)
+const EMBEDDING_TOKEN_LIMIT = 8192;
+
+/** Rough token count based on whitespace splitting. */
+function estimateTokens(text: string): number {
+  return text.split(/\s+/).filter(Boolean).length;
+}
+
+// Generate embeddings using Jina AI with basic validation and batching
 async function embedTexts(texts: string[]): Promise<number[][]> {
   const trimmed = texts.map((t) => t.trim()).filter((t) => t !== "");
   if (trimmed.length === 0) {
     return [];
   }
-  const response = await embedJina(trimmed);
-  if ("data" in response) {
-    return response.data.map((d) => d.embedding);
+
+  const results: number[][] = [];
+  let batch: string[] = [];
+  let tokens = 0;
+
+  for (const text of trimmed) {
+    const count = estimateTokens(text);
+    if (tokens + count > EMBEDDING_TOKEN_LIMIT && batch.length > 0) {
+      const response = await embedJina(batch);
+      const embeddings = "data" in response
+        ? response.data.map((d) => d.embedding)
+        : response.embeddings;
+      results.push(...embeddings);
+      batch = [];
+      tokens = 0;
+    }
+    batch.push(text);
+    tokens += count;
   }
-  return response.embeddings;
+
+  if (batch.length > 0) {
+    const response = await embedJina(batch);
+    const embeddings = "data" in response
+      ? response.data.map((d) => d.embedding)
+      : response.embeddings;
+    results.push(...embeddings);
+  }
+
+  return results;
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {
