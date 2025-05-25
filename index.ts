@@ -88,17 +88,92 @@ function chunkText(text: string, chunkSize = 200): string[] {
   return chunks;
 }
 
-// Generate embeddings using Jina AI with basic validation
+// Token limit for a single embedding request (approximate)
+const EMBEDDING_TOKEN_LIMIT = 8192;
+
+/**
+ * Rough token estimation based on character count.
+ * Uses 75% of the number of characters as a heuristic.
+ */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length * 0.75);
+}
+
+/** Process a batch of texts and return their embeddings in order. */
+async function processBatch(batch: string[]): Promise<number[][]> {
+  if (batch.length === 0) return [];
+  const response = await embedJina(batch);
+
+  if ("data" in response) {
+    const data = response.data;
+    const allIndexed = data.every(
+      (item) =>
+        item.index !== undefined &&
+        Number.isInteger(item.index) &&
+        item.index >= 0 &&
+        item.index < batch.length
+    );
+
+    if (allIndexed) {
+      const ordered: (number[] | undefined)[] = new Array(batch.length);
+      for (const item of data) {
+        if (item.index !== undefined && item.index < batch.length) {
+          ordered[item.index] = item.embedding;
+        }
+      }
+      return ordered.filter((e): e is number[] => e !== undefined);
+    }
+
+    if (!data.every((item) => item.index === undefined)) {
+      console.warn(
+        "Indices not consistently present in Jina response data; assuming direct order."
+      );
+    }
+
+    return data.map((d) => d.embedding);
+  }
+
+  return response.embeddings;
+}
+
+// Generate embeddings using Jina AI with basic validation and batching
 async function embedTexts(texts: string[]): Promise<number[][]> {
   const trimmed = texts.map((t) => t.trim()).filter((t) => t !== "");
   if (trimmed.length === 0) {
     return [];
   }
-  const response = await embedJina(trimmed);
-  if ("data" in response) {
-    return response.data.map((d) => d.embedding);
+
+  const results: number[][] = [];
+  let batch: string[] = [];
+  let tokens = 0;
+
+  for (const text of trimmed) {
+    const count = estimateTokens(text);
+
+    if (count > EMBEDDING_TOKEN_LIMIT) {
+      console.warn(
+        `Text starting with "${text.substring(0, 50)}..." has an estimated ${count} tokens, exceeding the limit of ${EMBEDDING_TOKEN_LIMIT}. It will be skipped.`
+      );
+      continue;
+    }
+
+    if (tokens + count > EMBEDDING_TOKEN_LIMIT && batch.length > 0) {
+      const embeddings = await processBatch(batch);
+      results.push(...embeddings);
+      batch = [];
+      tokens = 0;
+    }
+
+    batch.push(text);
+    tokens += count;
   }
-  return response.embeddings;
+
+  if (batch.length > 0) {
+    const embeddings = await processBatch(batch);
+    results.push(...embeddings);
+  }
+
+  return results;
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {
